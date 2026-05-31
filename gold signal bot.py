@@ -56,31 +56,23 @@ def detect_market_structure(candles):
     highs = [c["high"] for c in candles]
     lows = [c["low"] for c in candles]
 
-    # BOS Bullish: كسر أعلى قمة سابقة
     recent_high = max(highs[-10:-1])
     recent_low = min(lows[-10:-1])
     current_close = candles[-1]["close"]
     prev_close = candles[-2]["close"]
 
-    structure = None
-    change_type = None
-
-    # CHoCH - تغيير الهيكل
+    # CHoCH
     if current_close > recent_high and prev_close < recent_high:
-        structure = "BULLISH"
-        change_type = "CHoCH"
+        return "BULLISH", "CHoCH"
     elif current_close < recent_low and prev_close > recent_low:
-        structure = "BEARISH"
-        change_type = "CHoCH"
-    # BOS - كسر الهيكل
+        return "BEARISH", "CHoCH"
+    # BOS
     elif current_close > max(highs[-5:-1]):
-        structure = "BULLISH"
-        change_type = "BOS"
+        return "BULLISH", "BOS"
     elif current_close < min(lows[-5:-1]):
-        structure = "BEARISH"
-        change_type = "BOS"
+        return "BEARISH", "BOS"
 
-    return structure, change_type
+    return None, None
 
 # ==============================
 # كشف Liquidity
@@ -92,21 +84,15 @@ def detect_liquidity(candles):
     highs = [c["high"] for c in candles[-20:]]
     lows = [c["low"] for c in candles[-20:]]
 
-    # Equal Highs - قمم متساوية
+    # Equal Highs
     sorted_highs = sorted(highs, reverse=True)
     if abs(sorted_highs[0] - sorted_highs[1]) < 0.5:
-        liq_type = "Equal Highs"
-        liq_level = sorted_highs[0]
-        liq_side = "SELL"
-        return liq_side, liq_level
+        return "SELL", sorted_highs[0]
 
-    # Equal Lows - قيعان متساوية
+    # Equal Lows
     sorted_lows = sorted(lows)
     if abs(sorted_lows[0] - sorted_lows[1]) < 0.5:
-        liq_type = "Equal Lows"
-        liq_level = sorted_lows[0]
-        liq_side = "BUY"
-        return liq_side, liq_level
+        return "BUY", sorted_lows[0]
 
     # Previous High/Low
     prev_high = max(highs[:-3])
@@ -121,64 +107,42 @@ def detect_liquidity(candles):
     return None, None
 
 # ==============================
-# فلتر السيشن
-# ==============================
-def is_trading_session():
-    now = datetime.datetime.utcnow()
-    hour = now.hour
-
-    # London: 7-11 UTC
-    london = 7 <= hour < 11
-    # New York: 13-17 UTC
-    newyork = 13 <= hour < 17
-
-    return london or newyork
-
-# ==============================
 # التحليل الكامل ICT
 # ==============================
 def analyze_ict():
     candles_m5 = get_candles("5min", 50)
-    candles_m1 = get_candles("1min", 30)
-
-    if not candles_m5 or not candles_m1:
+    if not candles_m5:
         return None
 
-    # كشف الهيكل على M5
     structure, change_type = detect_market_structure(candles_m5)
-
-    # كشف الليكويديتي على M5
     liq_side, liq_level = detect_liquidity(candles_m5)
-
     current_price = get_gold_price()
+
     if not current_price:
         return None
 
-    signal = None
-
-    # شرط الإشارة: الهيكل والليكويديتي يتفقان
     if structure == "BULLISH" and liq_side == "BUY":
-        signal = {
+        return {
             "type": "BUY",
             "entry": current_price,
             "sl": round(current_price - 6, 2),
             "tp1": round(current_price + 10, 2),
             "tp2": round(current_price + 20, 2),
             "structure": change_type,
-            "liquidity": f"Buy-side Liquidity @ {liq_level}"
+            "liquidity": f"Buy-side @ {liq_level}"
         }
     elif structure == "BEARISH" and liq_side == "SELL":
-        signal = {
+        return {
             "type": "SELL",
             "entry": current_price,
             "sl": round(current_price + 6, 2),
             "tp1": round(current_price - 10, 2),
             "tp2": round(current_price - 20, 2),
             "structure": change_type,
-            "liquidity": f"Sell-side Liquidity @ {liq_level}"
+            "liquidity": f"Sell-side @ {liq_level}"
         }
 
-    return signal
+    return None
 
 # ==============================
 # إرسال رسالة
@@ -233,34 +197,30 @@ def get_updates(offset=None):
 
 def handle_commands():
     offset = None
-    last_signal_time = 0
     last_auto_check = 0
 
     send_message(CHAT_ID, """🥇 <b>A4kgold ICT Bot</b> يعمل الآن!
 
+🤖 يحلل السوق كل دقيقة ويرسل عند أي إشارة ICT
+
 الأوامر:
-/analyze - تحليل ICT الآن
+/analyze - تحليل فوري
 /price - السعر الحالي
 /buy - إشارة شراء يدوية
-/sell - إشارة بيع يدوية
-/subscribers - عدد المشتركين
+/sell - إشارة بيع يدوية""")
 
-🤖 البوت يحلل تلقائياً كل 5 دقائق خلال London و NY session""")
-
-    print("🤖 البوت ICT يعمل...")
+    print("🤖 البوت يعمل 24/7...")
 
     while True:
         now = time.time()
 
-        # تحليل تلقائي كل 5 دقائق خلال السيشن
-        if now - last_auto_check > 300:
+        # تحليل تلقائي كل دقيقة
+        if now - last_auto_check > 60:
             last_auto_check = now
-            if is_trading_session():
-                print("🔍 تحليل تلقائي...")
-                signal = analyze_ict()
-                if signal and now - last_signal_time > 1800:  # مرة كل 30 دقيقة فقط
-                    send_signal(signal)
-                    last_signal_time = now
+            print("🔍 تحليل...")
+            signal = analyze_ict()
+            if signal:
+                send_signal(signal)
 
         # أوامر يدوية
         updates = get_updates(offset)
@@ -271,13 +231,12 @@ def handle_commands():
             chat_id = str(message.get("chat", {}).get("id", ""))
 
             if text == "/start":
-                send_message(chat_id, "🥇 مرحباً في A4kgold ICT Bot!\n\n/analyze - تحليل\n/price - السعر\n/buy - شراء\n/sell - بيع")
+                send_message(chat_id, "🥇 مرحباً!\n/analyze - تحليل\n/price - السعر\n/buy - شراء\n/sell - بيع")
 
             elif text == "/price":
                 price = get_gold_price()
                 if price:
-                    session = "✅ السيشن نشط" if is_trading_session() else "⏸ خارج السيشن"
-                    send_message(chat_id, f"🥇 <b>XAUUSD = {price}</b>\n{session}")
+                    send_message(chat_id, f"🥇 <b>XAUUSD = {price}</b>")
                 else:
                     send_message(chat_id, "❌ تعذر جلب السعر")
 
@@ -287,18 +246,18 @@ def handle_commands():
                 if signal:
                     send_signal(signal)
                 else:
-                    send_message(chat_id, "⏳ لا توجد إشارة واضحة الآن\nالسوق يحتاج تأكيد أكثر")
+                    send_message(chat_id, "⏳ لا توجد إشارة واضحة الآن")
 
             elif text == "/buy":
                 price = get_gold_price()
                 if price:
-                    signal = {"type": "BUY", "entry": price, "sl": round(price-6,2), "tp1": round(price+10,2), "tp2": round(price+20,2), "structure": "Manual", "liquidity": "Manual Entry"}
+                    signal = {"type": "BUY", "entry": price, "sl": round(price-6,2), "tp1": round(price+10,2), "tp2": round(price+20,2), "structure": "Manual", "liquidity": "Manual"}
                     send_signal(signal)
 
             elif text == "/sell":
                 price = get_gold_price()
                 if price:
-                    signal = {"type": "SELL", "entry": price, "sl": round(price+6,2), "tp1": round(price-10,2), "tp2": round(price-20,2), "structure": "Manual", "liquidity": "Manual Entry"}
+                    signal = {"type": "SELL", "entry": price, "sl": round(price+6,2), "tp1": round(price-10,2), "tp2": round(price-20,2), "structure": "Manual", "liquidity": "Manual"}
                     send_signal(signal)
 
             elif text == "/subscribers":
