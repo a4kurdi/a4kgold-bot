@@ -9,75 +9,217 @@ TOKEN = "8987191949:AAEO9M67XH7lRD5U0rBGpoNxN2kh2zLZaqs"
 CHAT_ID = "642192218"
 TWELVEDATA_API_KEY = "78205beca0c641c183df17074fa99f02"
 
-# ==============================
-# قائمة المشتركين
-# ==============================
 subscribers = [CHAT_ID]
 
 # ==============================
-# جلب سعر الذهب الحالي
+# جلب بيانات الشموع
+# ==============================
+def get_candles(interval="5min", outputsize=50):
+    try:
+        url = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval={interval}&outputsize={outputsize}&apikey={TWELVEDATA_API_KEY}"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        candles = data.get("values", [])
+        result = []
+        for c in candles:
+            result.append({
+                "time": c["datetime"],
+                "open": float(c["open"]),
+                "high": float(c["high"]),
+                "low": float(c["low"]),
+                "close": float(c["close"])
+            })
+        return result
+    except Exception as e:
+        print(f"خطأ في جلب الشموع: {e}")
+        return []
+
+# ==============================
+# جلب السعر الحالي
 # ==============================
 def get_gold_price():
     try:
         url = f"https://api.twelvedata.com/price?symbol=XAU/USD&apikey={TWELVEDATA_API_KEY}"
         response = requests.get(url, timeout=5)
         data = response.json()
-        price = float(data["price"])
-        return round(price, 2)
-    except Exception as e:
-        print(f"خطأ في جلب السعر: {e}")
+        return round(float(data["price"]), 2)
+    except:
         return None
+
+# ==============================
+# كشف Market Structure
+# ==============================
+def detect_market_structure(candles):
+    if len(candles) < 10:
+        return None, None
+
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
+
+    # BOS Bullish: كسر أعلى قمة سابقة
+    recent_high = max(highs[-10:-1])
+    recent_low = min(lows[-10:-1])
+    current_close = candles[-1]["close"]
+    prev_close = candles[-2]["close"]
+
+    structure = None
+    change_type = None
+
+    # CHoCH - تغيير الهيكل
+    if current_close > recent_high and prev_close < recent_high:
+        structure = "BULLISH"
+        change_type = "CHoCH"
+    elif current_close < recent_low and prev_close > recent_low:
+        structure = "BEARISH"
+        change_type = "CHoCH"
+    # BOS - كسر الهيكل
+    elif current_close > max(highs[-5:-1]):
+        structure = "BULLISH"
+        change_type = "BOS"
+    elif current_close < min(lows[-5:-1]):
+        structure = "BEARISH"
+        change_type = "BOS"
+
+    return structure, change_type
+
+# ==============================
+# كشف Liquidity
+# ==============================
+def detect_liquidity(candles):
+    if len(candles) < 20:
+        return None, None
+
+    highs = [c["high"] for c in candles[-20:]]
+    lows = [c["low"] for c in candles[-20:]]
+
+    # Equal Highs - قمم متساوية
+    sorted_highs = sorted(highs, reverse=True)
+    if abs(sorted_highs[0] - sorted_highs[1]) < 0.5:
+        liq_type = "Equal Highs"
+        liq_level = sorted_highs[0]
+        liq_side = "SELL"
+        return liq_side, liq_level
+
+    # Equal Lows - قيعان متساوية
+    sorted_lows = sorted(lows)
+    if abs(sorted_lows[0] - sorted_lows[1]) < 0.5:
+        liq_type = "Equal Lows"
+        liq_level = sorted_lows[0]
+        liq_side = "BUY"
+        return liq_side, liq_level
+
+    # Previous High/Low
+    prev_high = max(highs[:-3])
+    prev_low = min(lows[:-3])
+    current_price = candles[-1]["close"]
+
+    if current_price > prev_high:
+        return "SELL", prev_high
+    elif current_price < prev_low:
+        return "BUY", prev_low
+
+    return None, None
+
+# ==============================
+# فلتر السيشن
+# ==============================
+def is_trading_session():
+    now = datetime.datetime.utcnow()
+    hour = now.hour
+
+    # London: 7-11 UTC
+    london = 7 <= hour < 11
+    # New York: 13-17 UTC
+    newyork = 13 <= hour < 17
+
+    return london or newyork
+
+# ==============================
+# التحليل الكامل ICT
+# ==============================
+def analyze_ict():
+    candles_m5 = get_candles("5min", 50)
+    candles_m1 = get_candles("1min", 30)
+
+    if not candles_m5 or not candles_m1:
+        return None
+
+    # كشف الهيكل على M5
+    structure, change_type = detect_market_structure(candles_m5)
+
+    # كشف الليكويديتي على M5
+    liq_side, liq_level = detect_liquidity(candles_m5)
+
+    current_price = get_gold_price()
+    if not current_price:
+        return None
+
+    signal = None
+
+    # شرط الإشارة: الهيكل والليكويديتي يتفقان
+    if structure == "BULLISH" and liq_side == "BUY":
+        signal = {
+            "type": "BUY",
+            "entry": current_price,
+            "sl": round(current_price - 6, 2),
+            "tp1": round(current_price + 10, 2),
+            "tp2": round(current_price + 20, 2),
+            "structure": change_type,
+            "liquidity": f"Buy-side Liquidity @ {liq_level}"
+        }
+    elif structure == "BEARISH" and liq_side == "SELL":
+        signal = {
+            "type": "SELL",
+            "entry": current_price,
+            "sl": round(current_price + 6, 2),
+            "tp1": round(current_price - 10, 2),
+            "tp2": round(current_price - 20, 2),
+            "structure": change_type,
+            "liquidity": f"Sell-side Liquidity @ {liq_level}"
+        }
+
+    return signal
 
 # ==============================
 # إرسال رسالة
 # ==============================
 def send_message(chat_id, message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, data=payload)
     except Exception as e:
-        print(f"خطأ في الإرسال: {e}")
+        print(f"خطأ: {e}")
 
 # ==============================
-# إرسال الإشارة لجميع المشتركين
+# إرسال الإشارة
 # ==============================
-def send_signal_to_all(signal_type, entry, sl, tp1, tp2):
+def send_signal(signal):
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    if signal_type == "BUY":
-        emoji = "🟢"
-        direction = "شراء"
-    else:
-        emoji = "🔴"
-        direction = "بيع"
+    emoji = "🟢" if signal["type"] == "BUY" else "🔴"
+    direction = "شراء" if signal["type"] == "BUY" else "بيع"
 
     message = f"""
 {emoji} <b>XAUUSD {direction}</b>
 
-📌 <b>Entry:</b> {entry}
-🛑 <b>SL:</b> {sl}
-🎯 <b>TP1:</b> {tp1}
-🎯 <b>TP2:</b> {tp2}
+📌 <b>Entry:</b> {signal['entry']}
+🛑 <b>SL:</b> {signal['sl']}
+🎯 <b>TP1:</b> {signal['tp1']}
+🎯 <b>TP2:</b> {signal['tp2']}
 
-📊 <b>الاستراتيجية:</b> ICT Liquidity M5
+📊 <b>الهيكل:</b> {signal['structure']}
+💧 <b>Liquidity:</b> {signal['liquidity']}
 🕐 <b>الوقت:</b> {now}
 
 ⚠️ هذه إشارة فقط - القرار النهائي لك
 """
-
-    for subscriber in subscribers:
-        send_message(subscriber, message)
+    for sub in subscribers:
+        send_message(sub, message)
         time.sleep(0.3)
-
-    print(f"✅ تم إرسال إشارة {signal_type} لـ {len(subscribers)} مشترك")
+    print(f"✅ إشارة {signal['type']} أُرسلت")
 
 # ==============================
-# الاستماع للأوامر
+# الأوامر
 # ==============================
 def get_updates(offset=None):
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
@@ -85,21 +227,43 @@ def get_updates(offset=None):
     if offset:
         params["offset"] = offset
     try:
-        response = requests.get(url, params=params)
-        return response.json()
+        return requests.get(url, params=params).json()
     except:
         return {"result": []}
 
 def handle_commands():
     offset = None
-    print("🤖 البوت يعمل ويستمع للأوامر...")
+    last_signal_time = 0
+    last_auto_check = 0
 
-    # رسالة ترحيب
-    send_message(CHAT_ID, "🥇 <b>A4kgold Bot</b> يعمل الآن!\n\nالأوامر:\n/buy - إشارة شراء\n/sell - إشارة بيع\n/price - السعر الحالي\n/subscribers - عدد المشتركين")
+    send_message(CHAT_ID, """🥇 <b>A4kgold ICT Bot</b> يعمل الآن!
+
+الأوامر:
+/analyze - تحليل ICT الآن
+/price - السعر الحالي
+/buy - إشارة شراء يدوية
+/sell - إشارة بيع يدوية
+/subscribers - عدد المشتركين
+
+🤖 البوت يحلل تلقائياً كل 5 دقائق خلال London و NY session""")
+
+    print("🤖 البوت ICT يعمل...")
 
     while True:
-        updates = get_updates(offset)
+        now = time.time()
 
+        # تحليل تلقائي كل 5 دقائق خلال السيشن
+        if now - last_auto_check > 300:
+            last_auto_check = now
+            if is_trading_session():
+                print("🔍 تحليل تلقائي...")
+                signal = analyze_ict()
+                if signal and now - last_signal_time > 1800:  # مرة كل 30 دقيقة فقط
+                    send_signal(signal)
+                    last_signal_time = now
+
+        # أوامر يدوية
+        updates = get_updates(offset)
         for update in updates.get("result", []):
             offset = update["update_id"] + 1
             message = update.get("message", {})
@@ -107,37 +271,38 @@ def handle_commands():
             chat_id = str(message.get("chat", {}).get("id", ""))
 
             if text == "/start":
-                send_message(chat_id, "🥇 مرحباً في A4kgold!\n\n/buy - إشارة شراء\n/sell - إشارة بيع\n/price - السعر الحالي")
+                send_message(chat_id, "🥇 مرحباً في A4kgold ICT Bot!\n\n/analyze - تحليل\n/price - السعر\n/buy - شراء\n/sell - بيع")
 
             elif text == "/price":
                 price = get_gold_price()
                 if price:
-                    send_message(chat_id, f"🥇 <b>سعر الذهب الحالي:</b>\nXAUUSD = <b>{price}</b>")
+                    session = "✅ السيشن نشط" if is_trading_session() else "⏸ خارج السيشن"
+                    send_message(chat_id, f"🥇 <b>XAUUSD = {price}</b>\n{session}")
                 else:
-                    send_message(chat_id, "❌ تعذر جلب السعر، حاول مجدداً")
+                    send_message(chat_id, "❌ تعذر جلب السعر")
+
+            elif text == "/analyze":
+                send_message(chat_id, "🔍 جاري التحليل...")
+                signal = analyze_ict()
+                if signal:
+                    send_signal(signal)
+                else:
+                    send_message(chat_id, "⏳ لا توجد إشارة واضحة الآن\nالسوق يحتاج تأكيد أكثر")
 
             elif text == "/buy":
                 price = get_gold_price()
                 if price:
-                    sl = round(price - 5, 2)
-                    tp1 = round(price + 8, 2)
-                    tp2 = round(price + 15, 2)
-                    send_signal_to_all("BUY", price, sl, tp1, tp2)
-                else:
-                    send_message(chat_id, "❌ تعذر جلب السعر، حاول مجدداً")
+                    signal = {"type": "BUY", "entry": price, "sl": round(price-6,2), "tp1": round(price+10,2), "tp2": round(price+20,2), "structure": "Manual", "liquidity": "Manual Entry"}
+                    send_signal(signal)
 
             elif text == "/sell":
                 price = get_gold_price()
                 if price:
-                    sl = round(price + 5, 2)
-                    tp1 = round(price - 8, 2)
-                    tp2 = round(price - 15, 2)
-                    send_signal_to_all("SELL", price, sl, tp1, tp2)
-                else:
-                    send_message(chat_id, "❌ تعذر جلب السعر، حاول مجدداً")
+                    signal = {"type": "SELL", "entry": price, "sl": round(price+6,2), "tp1": round(price-10,2), "tp2": round(price-20,2), "structure": "Manual", "liquidity": "Manual Entry"}
+                    send_signal(signal)
 
             elif text == "/subscribers":
-                send_message(chat_id, f"👥 عدد المشتركين: {len(subscribers)}")
+                send_message(chat_id, f"👥 المشتركين: {len(subscribers)}")
 
         time.sleep(1)
 
