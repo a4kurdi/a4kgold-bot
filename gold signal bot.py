@@ -7,44 +7,54 @@ import datetime
 # ==============================
 TOKEN = "8987191949:AAEO9M67XH7lRD5U0rBGpoNxN2kh2zLZaqs"
 CHAT_ID = "642192218"
-TWELVEDATA_API_KEY = "78205beca0c641c183df17074fa99f02"
 
 subscribers = [CHAT_ID]
 
 # ==============================
-# جلب بيانات الشموع
-# ==============================
-def get_candles(interval="5min", outputsize=50):
-    try:
-        url = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval={interval}&outputsize={outputsize}&apikey={TWELVEDATA_API_KEY}"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        candles = data.get("values", [])
-        result = []
-        for c in candles:
-            result.append({
-                "time": c["datetime"],
-                "open": float(c["open"]),
-                "high": float(c["high"]),
-                "low": float(c["low"]),
-                "close": float(c["close"])
-            })
-        return result
-    except Exception as e:
-        print(f"خطأ في جلب الشموع: {e}")
-        return []
-
-# ==============================
-# جلب السعر الحالي
+# جلب السعر من Yahoo Finance - مجاني بلا حد
 # ==============================
 def get_gold_price():
     try:
-        url = f"https://api.twelvedata.com/price?symbol=XAU/USD&apikey={TWELVEDATA_API_KEY}"
-        response = requests.get(url, timeout=5)
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
-        return round(float(data["price"]), 2)
-    except:
+        price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+        return round(float(price), 2)
+    except Exception as e:
+        print(f"خطأ في جلب السعر: {e}")
         return None
+
+# ==============================
+# جلب الشموع من Yahoo Finance
+# ==============================
+def get_candles(interval="5m", count=50):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval={interval}&range=1d"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        result = data["chart"]["result"][0]
+        timestamps = result["timestamp"]
+        opens = result["indicators"]["quote"][0]["open"]
+        highs = result["indicators"]["quote"][0]["high"]
+        lows = result["indicators"]["quote"][0]["low"]
+        closes = result["indicators"]["quote"][0]["close"]
+
+        candles = []
+        for i in range(len(closes)):
+            if closes[i] is not None:
+                candles.append({
+                    "time": timestamps[i],
+                    "open": float(opens[i]),
+                    "high": float(highs[i]),
+                    "low": float(lows[i]),
+                    "close": float(closes[i])
+                })
+        return candles[-count:] if len(candles) >= count else candles
+    except Exception as e:
+        print(f"خطأ في جلب الشموع: {e}")
+        return []
 
 # ==============================
 # كشف Market Structure
@@ -61,12 +71,10 @@ def detect_market_structure(candles):
     current_close = candles[-1]["close"]
     prev_close = candles[-2]["close"]
 
-    # CHoCH
     if current_close > recent_high and prev_close < recent_high:
         return "BULLISH", "CHoCH"
     elif current_close < recent_low and prev_close > recent_low:
         return "BEARISH", "CHoCH"
-    # BOS
     elif current_close > max(highs[-5:-1]):
         return "BULLISH", "BOS"
     elif current_close < min(lows[-5:-1]):
@@ -84,17 +92,14 @@ def detect_liquidity(candles):
     highs = [c["high"] for c in candles[-20:]]
     lows = [c["low"] for c in candles[-20:]]
 
-    # Equal Highs
     sorted_highs = sorted(highs, reverse=True)
     if abs(sorted_highs[0] - sorted_highs[1]) < 0.5:
         return "SELL", sorted_highs[0]
 
-    # Equal Lows
     sorted_lows = sorted(lows)
     if abs(sorted_lows[0] - sorted_lows[1]) < 0.5:
         return "BUY", sorted_lows[0]
 
-    # Previous High/Low
     prev_high = max(highs[:-3])
     prev_low = min(lows[:-3])
     current_price = candles[-1]["close"]
@@ -110,12 +115,12 @@ def detect_liquidity(candles):
 # التحليل الكامل ICT
 # ==============================
 def analyze_ict():
-    candles_m5 = get_candles("5min", 50)
-    if not candles_m5:
+    candles = get_candles("5m", 50)
+    if not candles:
         return None
 
-    structure, change_type = detect_market_structure(candles_m5)
-    liq_side, liq_level = detect_liquidity(candles_m5)
+    structure, change_type = detect_market_structure(candles)
+    liq_side, liq_level = detect_liquidity(candles)
     current_price = get_gold_price()
 
     if not current_price:
@@ -201,7 +206,7 @@ def handle_commands():
 
     send_message(CHAT_ID, """🥇 <b>A4kgold ICT Bot</b> يعمل الآن!
 
-🤖 يحلل السوق كل دقيقة ويرسل عند أي إشارة ICT
+🤖 يحلل السوق كل 3 دقائق ويرسل عند أي إشارة ICT
 
 الأوامر:
 /analyze - تحليل فوري
@@ -214,15 +219,14 @@ def handle_commands():
     while True:
         now = time.time()
 
-        # تحليل تلقائي كل دقيقة
-        if now - last_auto_check > 60:
+        # تحليل كل 3 دقائق
+        if now - last_auto_check > 180:
             last_auto_check = now
             print("🔍 تحليل...")
             signal = analyze_ict()
             if signal:
                 send_signal(signal)
 
-        # أوامر يدوية
         updates = get_updates(offset)
         for update in updates.get("result", []):
             offset = update["update_id"] + 1
@@ -253,12 +257,16 @@ def handle_commands():
                 if price:
                     signal = {"type": "BUY", "entry": price, "sl": round(price-6,2), "tp1": round(price+10,2), "tp2": round(price+20,2), "structure": "Manual", "liquidity": "Manual"}
                     send_signal(signal)
+                else:
+                    send_message(chat_id, "❌ تعذر جلب السعر")
 
             elif text == "/sell":
                 price = get_gold_price()
                 if price:
                     signal = {"type": "SELL", "entry": price, "sl": round(price+6,2), "tp1": round(price-10,2), "tp2": round(price-20,2), "structure": "Manual", "liquidity": "Manual"}
                     send_signal(signal)
+                else:
+                    send_message(chat_id, "❌ تعذر جلب السعر")
 
             elif text == "/subscribers":
                 send_message(chat_id, f"👥 المشتركين: {len(subscribers)}")
